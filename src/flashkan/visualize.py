@@ -182,12 +182,16 @@ def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
     return fig
 
 
-def plot_network(model, x=None, figsize=None, title=None):
+def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
     """Plot the full KAN network with learned activation curves on edges.
+
+    For large layers (> max_nodes), only a representative subset of
+    nodes and edges are drawn, with a label showing the true size.
 
     Args:
         model: A KANNetwork instance.
-        x: Optional sample input to show activation magnitudes.
+        x: Optional sample input (unused, reserved for future).
+        max_nodes: Max nodes to draw per layer. Default: 16.
         figsize: Figure size.
         title: Custom title.
 
@@ -200,21 +204,25 @@ def plot_network(model, x=None, figsize=None, title=None):
     n_layers = len(layers)
     dims = [layers[0].in_features] + [l.out_features for l in layers]
 
+    # Clamp display dims but remember real dims
+    display_dims = [min(d, max_nodes) for d in dims]
+    max_display = max(display_dims)
+
     if figsize is None:
-        figsize = (4 * n_layers + 2, max(dims) * 0.6 + 1)
+        figsize = (4 * n_layers + 2, max_display * 0.6 + 2)
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
     ax.set_xlim(-0.5, n_layers + 0.5)
-    ax.set_ylim(-0.5, max(dims) - 0.5)
+    ax.set_ylim(-1.2, max_display - 0.2)
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # Node positions
+    # Node positions (using display_dims)
     node_x = []
     node_y = []
     for layer_idx in range(n_layers + 1):
-        dim = dims[layer_idx]
-        offset = (max(dims) - dim) / 2.0
+        dim = display_dims[layer_idx]
+        offset = (max_display - dim) / 2.0
         xs = [layer_idx] * dim
         ys = [offset + i for i in range(dim)]
         node_x.append(xs)
@@ -234,35 +242,31 @@ def plot_network(model, x=None, figsize=None, title=None):
         bases = bases.squeeze(0)
         silu_t = torch.nn.functional.silu(t_curve)
 
-        in_dim = layer.in_features
-        out_dim = layer.out_features
+        d_in = display_dims[li]
+        d_out = display_dims[li + 1]
 
-        for ii in range(in_dim):
-            for oi in range(out_dim):
+        for ii in range(d_in):
+            for oi in range(d_out):
                 x0, y0 = node_x[li][ii], node_y[li][ii]
                 x1, y1 = node_x[li + 1][oi], node_y[li + 1][oi]
 
-                # Compute activation curve
+                # Compute activation curve for these (possibly subset) indices
                 w = spline_w[oi, ii, :]
                 activation = (bases * w).sum(dim=-1) + silu_t * base_w[oi, ii]
                 act_np = activation.detach().numpy()
 
-                # Normalize curve height for display
                 act_range = act_np.max() - act_np.min()
                 if act_range > 1e-6:
                     act_norm = (act_np - act_np.min()) / act_range - 0.5
                 else:
                     act_norm = np.zeros_like(act_np)
 
-                # Edge strength (for color intensity)
                 strength = min(1.0, act_range / 2.0)
 
-                # Draw the curve along the edge
                 t_edge = np.linspace(0, 1, n_curve_pts)
                 cx = x0 + (x1 - x0) * t_edge
                 cy = y0 + (y1 - y0) * t_edge
 
-                # Perpendicular offset for the curve
                 dx, dy = x1 - x0, y1 - y0
                 length = (dx**2 + dy**2) ** 0.5
                 if length > 0:
@@ -280,8 +284,8 @@ def plot_network(model, x=None, figsize=None, title=None):
 
     # Draw nodes
     for layer_idx in range(n_layers + 1):
-        dim = dims[layer_idx]
-        for i in range(dim):
+        d = display_dims[layer_idx]
+        for i in range(d):
             circle = plt.Circle(
                 (node_x[layer_idx][i], node_y[layer_idx][i]),
                 0.15, fill=True, color='#333333', ec='#00c8ff',
@@ -292,10 +296,13 @@ def plot_network(model, x=None, figsize=None, title=None):
                     str(i), ha='center', va='center', fontsize=7,
                     color='white', zorder=6)
 
-    # Layer labels
+    # Layer labels (show real dims)
     for li in range(n_layers + 1):
-        label = f"Layer {li}\n({dims[li]})"
-        ax.text(li, -0.8, label, ha='center', fontsize=9, color='gray')
+        real = dims[li]
+        shown = display_dims[li]
+        extra = f"\n(showing {shown}/{real})" if real > shown else ""
+        label = f"Layer {li}\n({real}){extra}"
+        ax.text(li, -1.0, label, ha='center', fontsize=9, color='gray')
 
     ax.set_title(title or "KAN Network", fontsize=13, pad=10)
     plt.tight_layout()

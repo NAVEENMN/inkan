@@ -70,6 +70,40 @@ for images, labels in train_loader:
 
 See [`examples/`](examples/) for complete runnable scripts.
 
+## Visualization
+
+FlashKAN includes built-in visualization for learned activation functions — similar to PyKAN's `model.plot()`.
+
+```python
+from flashkan import KANNetwork, plot_basis, plot_activations, plot_network
+
+model = KANNetwork([784, 32, 10], grid_size=8)
+# ... train on MNIST ...
+
+plot_basis(model.layers[0])          # B-spline basis bumps
+plot_activations(model.layers[1])    # learned curves per edge
+plot_network(model)                  # full network diagram
+```
+
+### B-spline basis functions
+
+The 8 basis bumps (grid_size=5, degree=3) — compact support, smooth overlap:
+
+![Basis functions](assets/basis.png)
+
+### Learned activation functions
+
+After training on MNIST, each edge learns a unique activation curve.
+Cyan = total, red dashed = spline component, green dotted = SiLU base:
+
+![Learned activations](assets/activations.png)
+
+### Network diagram
+
+Full [784 → 32 → 10] network with learned curves on edges:
+
+![Network diagram](assets/network.png)
+
 ## API
 
 ### `KANLayer(in_features, out_features, grid_size=5, spline_order=3)`
@@ -131,13 +165,14 @@ Verified: max difference vs Cox-de Boor reference is < 5e-5 in float32.
 
 ```
 src/flashkan/
-├── __init__.py     # Public API
-├── basis.py        # Truncated power B-spline + torch.compile (core math)
-├── layer.py        # KANLayer
-└── network.py      # KANNetwork
+├── __init__.py      # Public API
+├── basis.py         # Truncated power B-spline + torch.compile (core math)
+├── layer.py         # KANLayer
+├── network.py       # KANNetwork
+└── visualize.py     # plot_basis, plot_activations, plot_network
 ```
 
-4 source files. The core innovation is in `basis.py` — 30 lines of math.
+5 source files. The core innovation is in `basis.py` — 30 lines of math.
 
 ## Citation
 
