@@ -14,9 +14,11 @@ Example:
     >>> y = layer(x)  # [32, 64]
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from flashkan.layer import KANLayer
 from flashkan.network import KANNetwork
+from flashkan.visualize import plot_basis, plot_activations, plot_network
 
-__all__ = ["KANLayer", "KANNetwork"]
+__all__ = ["KANLayer", "KANNetwork",
+           "plot_basis", "plot_activations", "plot_network"]
