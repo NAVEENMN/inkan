@@ -1,11 +1,11 @@
-"""Visualization for FlashKAN layers and networks.
+"""Visualization for InKAN layers and networks.
 
 Plot learned activation functions, basis functions, and full
 network diagrams. All plots use matplotlib.
 
 Example:
-    >>> from flashkan import KANLayer
-    >>> from flashkan.visualize import plot_activations, plot_basis
+    >>> from inkan import KANLayer
+    >>> from inkan.visualize import plot_activations, plot_basis
     >>> layer = KANLayer(2, 3, grid_size=5)
     >>> # After training...
     >>> plot_activations(layer)            # learned curves per edge
@@ -23,14 +23,14 @@ try:
 except ImportError:
     HAS_MPL = False
 
-from flashkan.basis import bspline_basis_eager
+from inkan.basis import bspline_basis_eager
 
 
 def _check_matplotlib():
     if not HAS_MPL:
         raise ImportError(
             "matplotlib is required for visualization. "
-            "Install it with: pip install flashkan[dev]"
+            "Install it with: pip install inkan[dev]"
         )
 
 

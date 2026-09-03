@@ -1,7 +1,7 @@
 """Train a KAN classifier on MNIST.
 
 Usage:
-    pip install flashkan torchvision tqdm
+    pip install inkan torchvision tqdm
     python examples/mnist.py
 """
 
@@ -13,7 +13,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from flashkan import KANNetwork
+from inkan import KANNetwork
 
 
 def main() -> None:

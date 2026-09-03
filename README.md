@@ -1,12 +1,12 @@
-# FlashKAN
+# InKAN
 
 Fast B-spline [Kolmogorov-Arnold Network](https://arxiv.org/abs/2404.19756) layers for PyTorch.
 
-**6-15x faster** than standard Cox-de Boor implementations (PyKAN, efficient-kan), **faster than Gaussian RBF** alternatives (FastKAN) — while producing **exact B-spline basis values** with compact support, C2 continuity, and partition of unity.
+**6-15x faster** than standard Cox-de Boor implementations (PyKAN, efficient-kan), **faster than Gaussian RBF** alternatives (FastKAN), while producing **exact B-spline basis values** with compact support, C2 continuity, and partition of unity.
 
 ## How it works
 
-Standard KAN implementations compute B-spline basis functions using the Cox-de Boor recursion — 3 sequential passes for cubic splines, each creating intermediate tensors. FlashKAN replaces this with the truncated power closed form:
+Standard KAN implementations compute B-spline basis functions using the Cox-de Boor recursion: 3 sequential passes for cubic splines, each creating intermediate tensors. InKAN replaces this with the truncated power closed form:
 
 ```
 N(u) = (1/6) [relu(u)³ - 4·relu(u-1)³ + 6·relu(u-2)³ - 4·relu(u-3)³ + relu(u-4)³]
@@ -17,7 +17,7 @@ This single expression computes exact B-spline values with no recursion, no span
 ## Installation
 
 ```bash
-pip install flashkan
+pip install inkan
 ```
 
 **Requirements:** Python >= 3.9, PyTorch >= 2.0
@@ -27,8 +27,8 @@ pip install flashkan
 ### From source
 
 ```bash
-git clone https://github.com/NAVEENMN/flashkan.git
-cd flashkan
+git clone https://github.com/NAVEENMN/inkan.git
+cd inkan
 pip install -e .
 ```
 
@@ -36,7 +36,7 @@ pip install -e .
 
 ```python
 import torch
-from flashkan import KANLayer, KANNetwork
+from inkan import KANLayer, KANNetwork
 
 # Drop-in replacement for nn.Linear
 layer = KANLayer(784, 64)
@@ -53,7 +53,7 @@ y = net(torch.randn(32, 784))  # [32, 10]
 ```python
 import torch
 import torch.nn as nn
-from flashkan import KANNetwork
+from inkan import KANNetwork
 
 model = KANNetwork([784, 64, 10])
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -72,10 +72,10 @@ See [`examples/`](examples/) for complete runnable scripts.
 
 ## Visualization
 
-FlashKAN includes built-in visualization for learned activation functions — similar to PyKAN's `model.plot()`.
+InKAN includes built-in visualization for learned activation functions, similar to PyKAN's `model.plot()`.
 
 ```python
-from flashkan import KANNetwork, plot_basis, plot_activations, plot_network
+from inkan import KANNetwork, plot_basis, plot_activations, plot_network
 
 model = KANNetwork([784, 32, 10], grid_size=8)
 # ... train on MNIST ...
@@ -87,7 +87,7 @@ plot_network(model)                  # full network diagram
 
 ### B-spline basis functions
 
-The 8 basis bumps (grid_size=5, degree=3) — compact support, smooth overlap:
+The 8 basis bumps (grid_size=5, degree=3), compact support, smooth overlap:
 
 ![Basis functions](assets/basis.png)
 
@@ -133,38 +133,38 @@ Forward pass time (ms) on Apple M-series GPU (MPS), batch=256:
 
 | Layer | MNIST (784→64) | FashionMNIST (784→64) | CIFAR-10 (3072→64) |
 |---|---|---|---|
-| **FlashKAN (compiled)** | **0.27** | **0.20** | **0.39** |
+| **InKAN (compiled)** | **0.27** | **0.20** | **0.39** |
 | FastKAN (Gaussian RBF) | 0.38 | 0.31 | 0.99 |
 | NoGather (unrolled) | 0.99 | 1.02 | 4.85 |
 | Vanilla (Cox-de Boor) | 1.69 | 1.67 | 5.98 |
 
-FlashKAN is **6.3x faster** than vanilla Cox-de Boor on MNIST and **15.3x faster** on CIFAR-10.
+InKAN is **6.3x faster** than vanilla Cox-de Boor on MNIST and **15.3x faster** on CIFAR-10.
 
 ### Why it's fast
 
-91% of a standard KAN forward pass is spent computing B-spline basis functions. FlashKAN eliminates this bottleneck:
+91% of a standard KAN forward pass is spent computing B-spline basis functions. InKAN eliminates this bottleneck:
 
 | Approach | Basis cost | Why |
 |---|---|---|
 | Cox-de Boor (PyKAN) | 3 sequential GPU passes | Each pass depends on previous |
 | Gaussian RBF (FastKAN) | 1 `exp()` call | Fast but not a true B-spline |
-| **Truncated power (FlashKAN)** | **1 fused kernel** | `clamp + multiply` is cheaper than `exp()` |
+| **Truncated power (InKAN)** | **1 fused kernel** | `clamp + multiply` is cheaper than `exp()` |
 
 ## B-spline properties preserved
 
-Unlike Gaussian RBF approximations, FlashKAN computes **exact** B-spline basis values:
+Unlike Gaussian RBF approximations, InKAN computes **exact** B-spline basis values:
 
-- **Compact support** — each basis function is exactly zero outside its knot span window
-- **C2 continuity** — second derivatives are continuous at every knot
-- **Partition of unity** — basis values sum to 1 at every point in the interior
-- **Non-negativity** — all basis values are >= 0
+- **Compact support**: each basis function is exactly zero outside its knot span window
+- **C2 continuity**: second derivatives are continuous at every knot
+- **Partition of unity**: basis values sum to 1 at every point in the interior
+- **Non-negativity**: all basis values are >= 0
 
 Verified: max difference vs Cox-de Boor reference is < 5e-5 in float32.
 
 ## Project structure
 
 ```
-src/flashkan/
+src/inkan/
 ├── __init__.py      # Public API
 ├── basis.py         # Truncated power B-spline + torch.compile (core math)
 ├── layer.py         # KANLayer
@@ -172,18 +172,18 @@ src/flashkan/
 └── visualize.py     # plot_basis, plot_activations, plot_network
 ```
 
-5 source files. The core innovation is in `basis.py` — 30 lines of math.
+5 source files. The core innovation is in `basis.py`: 30 lines of math.
 
 ## Citation
 
-If you use FlashKAN in your research, please cite:
+If you use InKAN in your research, please cite:
 
 ```bibtex
-@software{flashkan2026,
-  title={FlashKAN: Fast B-spline KAN Layers via Truncated Power Basis},
+@software{inkan2026,
+  title={InKAN: B-Spline KANs via Truncated Power Form},
   author={Mysore, Naveen},
   year={2026},
-  url={https://github.com/NAVEENMN/flashkan}
+  url={https://github.com/NAVEENMN/inkan}
 }
 ```
 

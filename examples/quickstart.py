@@ -1,7 +1,7 @@
-"""FlashKAN in 20 lines — the simplest possible example."""
+"""InKAN in 20 lines — the simplest possible example."""
 
 import torch
-from flashkan import KANLayer, KANNetwork
+from inkan import KANLayer, KANNetwork
 
 # Single layer (drop-in for nn.Linear)
 layer = KANLayer(8, 4)

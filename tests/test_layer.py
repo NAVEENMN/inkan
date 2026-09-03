@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from flashkan import KANLayer, KANNetwork
+from inkan import KANLayer, KANNetwork
 
 
 class TestKANLayer:

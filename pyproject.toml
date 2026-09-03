@@ -3,8 +3,8 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flashkan"
-version = "0.2.0"
+name = "inkan"
+version = "0.1.0"
 description = "Fast B-spline KAN layers — 6-15x faster than Cox-de Boor, exact B-spline values"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,8 +36,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/naveenmysore/flashkan"
-Repository = "https://github.com/naveenmysore/flashkan"
+Homepage = "https://github.com/NAVEENMN/inkan"
+Repository = "https://github.com/NAVEENMN/inkan"
 
 [tool.setuptools.packages.find]
 where = ["src"]

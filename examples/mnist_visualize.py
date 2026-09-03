@@ -14,7 +14,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from flashkan import KANNetwork, plot_basis, plot_activations, plot_network
+from inkan import KANNetwork, plot_basis, plot_activations, plot_network
 
 
 def main():

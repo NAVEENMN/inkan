@@ -8,7 +8,7 @@ Example:
 import torch
 import torch.nn as nn
 
-from flashkan.layer import KANLayer
+from inkan.layer import KANLayer
 
 
 class KANNetwork(nn.Module):

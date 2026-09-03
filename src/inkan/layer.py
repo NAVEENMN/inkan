@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from flashkan.basis import bspline_basis
+from inkan.basis import bspline_basis
 
 
 class KANLayer(nn.Module):

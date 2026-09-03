@@ -4,7 +4,7 @@ Demonstrates that KAN can learn mathematical functions with
 fewer parameters than an MLP, especially compositional ones.
 
 Usage:
-    pip install flashkan matplotlib
+    pip install inkan matplotlib
     python examples/function_fitting.py
 """
 
@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from flashkan import KANNetwork
+from inkan import KANNetwork
 
 
 # Target functions to fit
@@ -80,7 +80,7 @@ def fit_function(name, epochs=1000, hidden=16, grid_size=10, lr=1e-3):
 
 
 def main():
-    print("FlashKAN Function Fitting")
+    print("InKAN Function Fitting")
     print("=" * 50)
 
     results = {}

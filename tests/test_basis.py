@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from flashkan.basis import bspline_basis_eager
+from inkan.basis import bspline_basis_eager
 
 
 def _cox_de_boor_basis(i, k, x, grid):
