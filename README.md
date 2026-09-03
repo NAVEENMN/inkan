@@ -89,20 +89,20 @@ plot_network(model)                  # full network diagram
 
 The 8 basis bumps (grid_size=5, degree=3), compact support, smooth overlap:
 
-![Basis functions](assets/basis.png)
+![Basis functions](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/basis.png)
 
 ### Learned activation functions
 
 After training on MNIST, each edge learns a unique activation curve.
 Cyan = total, red dashed = spline component, green dotted = SiLU base:
 
-![Learned activations](assets/activations.png)
+![Learned activations](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/activations.png)
 
 ### Network diagram
 
 Full [784 → 32 → 10] network with learned curves on edges:
 
-![Network diagram](assets/network.png)
+![Network diagram](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/network.png)
 
 ## API
 
