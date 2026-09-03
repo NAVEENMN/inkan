@@ -1,6 +1,6 @@
 # InKAN
 
-Fast B-spline [Kolmogorov-Arnold Network](https://arxiv.org/abs/2404.19756) layers for PyTorch.
+InKAN provies a fast and accurate B-spline [Kolmogorov-Arnold Network](https://arxiv.org/abs/2404.19756) layers for PyTorch.
 
 **6-15x faster** than standard Cox-de Boor implementations (PyKAN, efficient-kan), **faster than Gaussian RBF** alternatives (FastKAN), while producing **exact B-spline basis values** with compact support, C2 continuity, and partition of unity.
 
