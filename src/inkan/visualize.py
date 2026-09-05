@@ -101,6 +101,87 @@ def plot_basis(layer, n_points=500, figsize=None, title=None):
     return fig
 
 
+def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
+    """Plot the learned 2D tensor-product B-spline surface for a dim=2 layer.
+
+    Shows S(x,y) = b_x^T C b_y as a 3D surface plot and a contour plot.
+
+    Args:
+        layer: A KANLayer instance with dim=2.
+        n_points: Grid resolution per axis.
+        out_idx: Which output dimension to plot. Default: 0.
+        figsize: Figure size tuple.
+        title: Custom title.
+
+    Returns:
+        matplotlib Figure.
+    """
+    _check_matplotlib()
+    from mpl_toolkits.mplot3d import Axes3D
+
+    if layer.dim != 2:
+        raise ValueError("plot_surface requires a dim=2 KANLayer")
+
+    grid_starts = layer.grid_starts.cpu()
+    inv_h = layer.inv_h
+    C = layer.spline_weight[out_idx].detach().cpu()  # [K, K]
+    base_w = layer.base_weight[out_idx].detach().cpu()  # [2]
+
+    x_lin = torch.linspace(-1, 1, n_points)
+    y_lin = torch.linspace(-1, 1, n_points)
+    xx, yy = torch.meshgrid(x_lin, y_lin, indexing="ij")
+
+    # Compute 1D bases
+    b_x = bspline_basis_eager(x_lin.unsqueeze(0).unsqueeze(-1),
+                               grid_starts.unsqueeze(0),
+                               inv_h)
+    # Reshape: we need [n_points, K]
+    b_x_vals = bspline_basis_eager(x_lin.unsqueeze(1), grid_starts, inv_h)
+    b_x_vals = b_x_vals.squeeze(1)  # [n_points, K]
+
+    b_y_vals = bspline_basis_eager(y_lin.unsqueeze(1), grid_starts, inv_h)
+    b_y_vals = b_y_vals.squeeze(1)  # [n_points, K]
+
+    # S(x,y) = b_x^T C b_y -> [n_x, n_y]
+    zz_spline = torch.einsum("ik,kl,jl->ij", b_x_vals, C, b_y_vals)
+
+    # Add residual: base_activation(x)*w_x + base_activation(y)*w_y
+    silu = torch.nn.functional.silu
+    base_x = silu(x_lin) * base_w[0]  # [n_points]
+    base_y = silu(y_lin) * base_w[1]  # [n_points]
+    zz_base = base_x.unsqueeze(1) + base_y.unsqueeze(0)  # [n_x, n_y]
+
+    zz = (zz_spline + zz_base).detach().numpy()
+    xx_np = xx.numpy()
+    yy_np = yy.numpy()
+
+    if figsize is None:
+        figsize = (14, 5)
+
+    fig = plt.figure(figsize=figsize)
+
+    # 3D surface
+    ax1 = fig.add_subplot(1, 2, 1, projection="3d")
+    ax1.plot_surface(xx_np, yy_np, zz, cmap="viridis", alpha=0.9,
+                     edgecolor="none")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_zlabel("z")
+    ax1.set_title(title or f"Learned 2D Surface (output {out_idx})")
+
+    # Contour
+    ax2 = fig.add_subplot(1, 2, 2)
+    c = ax2.contourf(xx_np, yy_np, zz, levels=30, cmap="viridis")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_aspect("equal")
+    ax2.set_title("Contour View")
+    plt.colorbar(c, ax=ax2)
+
+    plt.tight_layout()
+    return fig
+
+
 def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
                      figsize=None, title=None):
     """Plot the learned activation functions φ(x) for each edge.
