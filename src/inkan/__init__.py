@@ -19,7 +19,7 @@ Example:
     >>> y = layer(x)  # [32, 64]
 """
 
-__version__ = "0.2.0"  # bounded-coordinate stabilization + dim=2
+__version__ = "0.2.1"
 
 from inkan.layer import KANLayer
 from inkan.network import KANNetwork
