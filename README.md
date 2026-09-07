@@ -167,10 +167,10 @@ net = KANNetwork([2, 8, 1], dim=2, grid_size=12)
 | Method | dim=784 | dim=3072 |
 |---|---|---|
 | **InKAN** | **0.253 ms** | **0.264 ms** |
-| Efficient-KAN | 0.722 ms | 0.919 ms |
+| Efficient-KAN (Cox-de Boor) | 0.722 ms | 0.919 ms |
 | FastKAN (Gaussian RBF) | 0.230 ms | 0.256 ms |
 
-InKAN is **~3x faster** than Efficient-KAN. Comparable to FastKAN on H100.
+InKAN has **2.8--3.5x lower latency** than the Cox-de Boor recursion. FastKAN has the lowest latency in these configurations; InKAN is approximately 3--11% higher.
 
 ### Numerical stability (bounded-coordinate stabilization)
 
