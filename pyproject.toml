@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "inkan"
 version = "0.2.0"
-description = "Fast B-spline KAN layers — 6-15x faster than Cox-de Boor, exact B-spline values"
+description = "Fast, stable uniform cubic B-spline KAN layers via truncated power form with bounded-coordinate evaluation"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"

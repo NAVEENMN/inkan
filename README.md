@@ -2,7 +2,7 @@
 
 Fast, stable uniform cubic B-spline [Kolmogorov-Arnold Network](https://arxiv.org/abs/2404.19756) layers for PyTorch.
 
-**~3x faster** than Efficient-KAN on H100 CUDA, numerically stable up to grid_size=200+, with bounded-coordinate stabilization that eliminates the catastrophic cancellation historically associated with the truncated power form.
+Evaluates B-spline basis functions via the truncated power closed form instead of the Cox-de Boor recursion. **2.8--3.5x lower forward-pass latency** than recursive implementations on H100 CUDA, numerically stable up to grid_size=200+ with bounded-coordinate evaluation that prevents the cancellation error historically associated with the truncated power form.
 
 Supports 1D univariate splines and 2D tensor-product B-spline surfaces.
 
