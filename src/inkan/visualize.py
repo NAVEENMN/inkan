@@ -1,16 +1,19 @@
 """Visualization for InKAN layers and networks.
 
-Plot learned activation functions, basis functions, and full
-network diagrams. All plots use matplotlib.
+All plot functions accept either a KANLayer or a KANNetwork.
+When a network is passed, use the ``layer`` parameter to select
+which layer to visualize (default: 0).
 
 Example:
-    >>> from inkan import KANLayer
+    >>> from inkan import KANNetwork
     >>> from inkan.visualize import plot_activations, plot_basis
-    >>> layer = KANLayer(2, 3, grid_size=5)
+    >>> net = KANNetwork([784, 32, 10])
     >>> # After training...
-    >>> plot_activations(layer)            # learned curves per edge
-    >>> plot_basis(layer)                  # B-spline basis bumps
-    >>> plot_network(model, x_sample)      # full network diagram
+    >>> plot_activations(net, layer=0)   # first layer
+    >>> plot_activations(net, layer=1)   # second layer
+    >>> plot_basis(net)                  # defaults to layer 0
+    >>> plot_surface(net, layer=0)       # 2D surface (dim=2 layer)
+    >>> plot_network(net)                # full network diagram
 """
 
 import torch
@@ -30,19 +33,50 @@ def _check_matplotlib():
     if not HAS_MPL:
         raise ImportError(
             "matplotlib is required for visualization. "
-            "Install it with: pip install inkan[dev]"
+            "Install it with: pip install matplotlib"
         )
 
 
-def plot_basis(layer, n_points=500, figsize=None, title=None):
+def _resolve_layer(model_or_layer, layer=None):
+    """Resolve a KANLayer from either a layer or a network + index.
+
+    Args:
+        model_or_layer: A KANLayer or KANNetwork instance.
+        layer: Layer index when a KANNetwork is passed. Default: 0.
+
+    Returns:
+        A KANLayer instance.
+    """
+    from inkan.layer import KANLayer
+    from inkan.network import KANNetwork
+
+    if isinstance(model_or_layer, KANLayer):
+        if layer is not None:
+            raise ValueError(
+                "layer parameter is not used when passing a KANLayer directly")
+        return model_or_layer
+
+    if isinstance(model_or_layer, KANNetwork):
+        idx = layer if layer is not None else 0
+        n = len(model_or_layer.layers)
+        if idx < 0 or idx >= n:
+            raise IndexError(
+                f"layer={idx} is out of range for a network with {n} layers")
+        return model_or_layer.layers[idx]
+
+    raise TypeError(
+        f"Expected KANLayer or KANNetwork, got {type(model_or_layer).__name__}")
+
+
+def plot_basis(model_or_layer, layer=None, n_points=500, figsize=None,
+               title=None):
     """Plot the B-spline basis functions for a layer.
 
     Shows the individual basis bumps N_i(x) across the input range.
-    This is what each basis function looks like before being weighted
-    by the learned coefficients.
 
     Args:
-        layer: A KANLayer instance.
+        model_or_layer: A KANLayer or KANNetwork instance.
+        layer: Layer index when a KANNetwork is passed. Default: 0.
         n_points: Number of sample points for the curves.
         figsize: Figure size tuple. Default auto-scales.
         title: Custom title.
@@ -51,21 +85,19 @@ def plot_basis(layer, n_points=500, figsize=None, title=None):
         matplotlib Figure.
     """
     _check_matplotlib()
+    kan_layer = _resolve_layer(model_or_layer, layer)
 
-    grid_starts = layer.grid_starts.cpu()
-    inv_h = layer.inv_h
+    grid_starts = kan_layer.grid_starts.cpu()
+    inv_h = kan_layer.inv_h
     h = 1.0 / inv_h
     n_bases = len(grid_starts)
 
-    # Input range: cover the full support of all basis functions
     x_min = grid_starts[0].item()
     x_max = grid_starts[-1].item() + 4 * h
     x = torch.linspace(x_min, x_max, n_points)
 
-    # Evaluate all basis functions
-    # basis expects [batch, in], we use [1, n_points]
     bases = bspline_basis_eager(x.unsqueeze(0), grid_starts, inv_h)
-    bases = bases.squeeze(0).detach().numpy()  # [n_points, n_bases]
+    bases = bases.squeeze(0).detach().numpy()
     x_np = x.numpy()
 
     if figsize is None:
@@ -77,37 +109,38 @@ def plot_basis(layer, n_points=500, figsize=None, title=None):
     for i in range(n_bases):
         ax.plot(x_np, bases[:, i], color=colors[i], linewidth=2,
                 label=f"N{i}", alpha=0.8)
-        # Mark the center of each basis
         peak_idx = np.argmax(bases[:, i])
         ax.plot(x_np[peak_idx], bases[peak_idx, i], 'o',
                 color=colors[i], markersize=4)
 
-    # Mark the active grid range
-    grid_range = layer.grid_starts.cpu()
-    ax.axvline(x=-1.0, color='gray', linestyle='--', alpha=0.3, label='grid range')
+    ax.axvline(x=-1.0, color='gray', linestyle='--', alpha=0.3,
+               label='grid range')
     ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.3)
 
-    # Mark knot positions
-    knot_positions = grid_starts.numpy() + 2 * h  # center of support
+    knot_positions = grid_starts.numpy() + 2 * h
     for kp in knot_positions:
         ax.axvline(x=kp, color='lightgray', linestyle=':', alpha=0.2)
 
     ax.set_xlabel("x")
     ax.set_ylabel("N(x)")
-    ax.set_title(title or f"B-spline Basis Functions (grid_size={layer.grid_size}, degree={layer.spline_order})")
+    ax.set_title(title or f"B-spline Basis Functions "
+                 f"(grid_size={kan_layer.grid_size}, "
+                 f"degree={kan_layer.spline_order})")
     ax.legend(fontsize=8, ncol=min(n_bases, 4), loc='upper right')
     ax.grid(True, alpha=0.2)
     plt.tight_layout()
     return fig
 
 
-def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
-    """Plot the learned 2D tensor-product B-spline surface for a dim=2 layer.
+def plot_surface(model_or_layer, layer=None, n_points=50, out_idx=0,
+                 figsize=None, title=None):
+    """Plot the learned 2D tensor-product B-spline surface.
 
     Shows S(x,y) = b_x^T C b_y as a 3D surface plot and a contour plot.
 
     Args:
-        layer: A KANLayer instance with dim=2.
+        model_or_layer: A KANLayer (dim=2) or KANNetwork instance.
+        layer: Layer index when a KANNetwork is passed. Default: 0.
         n_points: Grid resolution per axis.
         out_idx: Which output dimension to plot. Default: 0.
         figsize: Figure size tuple.
@@ -119,37 +152,32 @@ def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
     _check_matplotlib()
     from mpl_toolkits.mplot3d import Axes3D
 
-    if layer.dim != 2:
+    kan_layer = _resolve_layer(model_or_layer, layer)
+
+    if kan_layer.dim != 2:
         raise ValueError("plot_surface requires a dim=2 KANLayer")
 
-    grid_starts = layer.grid_starts.cpu()
-    inv_h = layer.inv_h
-    C = layer.spline_weight[out_idx].detach().cpu()  # [K, K]
-    base_w = layer.base_weight[out_idx].detach().cpu()  # [2]
+    grid_starts = kan_layer.grid_starts.cpu()
+    inv_h = kan_layer.inv_h
+    C = kan_layer.spline_weight[out_idx].detach().cpu()
+    base_w = kan_layer.base_weight[out_idx].detach().cpu()
 
     x_lin = torch.linspace(-1, 1, n_points)
     y_lin = torch.linspace(-1, 1, n_points)
     xx, yy = torch.meshgrid(x_lin, y_lin, indexing="ij")
 
-    # Compute 1D bases
-    b_x = bspline_basis_eager(x_lin.unsqueeze(0).unsqueeze(-1),
-                               grid_starts.unsqueeze(0),
-                               inv_h)
-    # Reshape: we need [n_points, K]
     b_x_vals = bspline_basis_eager(x_lin.unsqueeze(1), grid_starts, inv_h)
-    b_x_vals = b_x_vals.squeeze(1)  # [n_points, K]
+    b_x_vals = b_x_vals.squeeze(1)
 
     b_y_vals = bspline_basis_eager(y_lin.unsqueeze(1), grid_starts, inv_h)
-    b_y_vals = b_y_vals.squeeze(1)  # [n_points, K]
+    b_y_vals = b_y_vals.squeeze(1)
 
-    # S(x,y) = b_x^T C b_y -> [n_x, n_y]
     zz_spline = torch.einsum("ik,kl,jl->ij", b_x_vals, C, b_y_vals)
 
-    # Add residual: base_activation(x)*w_x + base_activation(y)*w_y
     silu = torch.nn.functional.silu
-    base_x = silu(x_lin) * base_w[0]  # [n_points]
-    base_y = silu(y_lin) * base_w[1]  # [n_points]
-    zz_base = base_x.unsqueeze(1) + base_y.unsqueeze(0)  # [n_x, n_y]
+    base_x = silu(x_lin) * base_w[0]
+    base_y = silu(y_lin) * base_w[1]
+    zz_base = base_x.unsqueeze(1) + base_y.unsqueeze(0)
 
     zz = (zz_spline + zz_base).detach().numpy()
     xx_np = xx.numpy()
@@ -160,7 +188,6 @@ def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
 
     fig = plt.figure(figsize=figsize)
 
-    # 3D surface
     ax1 = fig.add_subplot(1, 2, 1, projection="3d")
     ax1.plot_surface(xx_np, yy_np, zz, cmap="viridis", alpha=0.9,
                      edgecolor="none")
@@ -169,7 +196,6 @@ def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
     ax1.set_zlabel("z")
     ax1.set_title(title or f"Learned 2D Surface (output {out_idx})")
 
-    # Contour
     ax2 = fig.add_subplot(1, 2, 2)
     c = ax2.contourf(xx_np, yy_np, zz, levels=30, cmap="viridis")
     ax2.set_xlabel("x")
@@ -182,15 +208,16 @@ def plot_surface(layer, n_points=50, out_idx=0, figsize=None, title=None):
     return fig
 
 
-def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
-                     figsize=None, title=None):
-    """Plot the learned activation functions φ(x) for each edge.
+def plot_activations(model_or_layer, layer=None, n_points=500,
+                     in_idx=None, out_idx=None, figsize=None, title=None):
+    """Plot the learned activation functions for each edge.
 
     Each subplot shows one edge's activation: the weighted sum of
     basis functions plus the SiLU residual.
 
     Args:
-        layer: A KANLayer instance.
+        model_or_layer: A KANLayer or KANNetwork instance.
+        layer: Layer index when a KANNetwork is passed. Default: 0.
         n_points: Number of sample points.
         in_idx: Which input features to show. Default: all (capped at 8).
         out_idx: Which output features to show. Default: all (capped at 8).
@@ -201,26 +228,25 @@ def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
         matplotlib Figure.
     """
     _check_matplotlib()
+    kan_layer = _resolve_layer(model_or_layer, layer)
 
-    # Determine which edges to plot
     max_show = 8
     if in_idx is None:
-        in_idx = list(range(min(layer.in_features, max_show)))
+        in_idx = list(range(min(kan_layer.in_features, max_show)))
     if out_idx is None:
-        out_idx = list(range(min(layer.out_features, max_show)))
+        out_idx = list(range(min(kan_layer.out_features, max_show)))
 
     n_in = len(in_idx)
     n_out = len(out_idx)
 
-    grid_starts = layer.grid_starts.cpu()
-    inv_h = layer.inv_h
-    spline_w = layer.spline_weight.detach().cpu()  # [out, in, n_bases]
-    base_w = layer.base_weight.detach().cpu()       # [out, in]
+    grid_starts = kan_layer.grid_starts.cpu()
+    inv_h = kan_layer.inv_h
+    spline_w = kan_layer.spline_weight.detach().cpu()
+    base_w = kan_layer.base_weight.detach().cpu()
 
-    # Sample x values
     x = torch.linspace(-1.0, 1.0, n_points)
     bases = bspline_basis_eager(x.unsqueeze(0), grid_starts, inv_h)
-    bases = bases.squeeze(0)  # [n_points, n_bases]
+    bases = bases.squeeze(0)
     silu_x = torch.nn.functional.silu(x)
 
     if figsize is None:
@@ -232,15 +258,12 @@ def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
         for col, ii in enumerate(in_idx):
             ax = axes[row, col]
 
-            # Spline component: bases @ spline_w[oi, ii, :]
-            w = spline_w[oi, ii, :]  # [n_bases]
+            w = spline_w[oi, ii, :]
             spline_y = (bases * w).sum(dim=-1).numpy()
 
-            # Base component: silu(x) * base_w[oi, ii]
             bw = base_w[oi, ii].item()
             base_y = (silu_x * bw).numpy()
 
-            # Total activation
             total_y = spline_y + base_y
 
             x_np = x.numpy()
@@ -251,23 +274,26 @@ def plot_activations(layer, n_points=500, in_idx=None, out_idx=None,
             ax.plot(x_np, base_y, color='#88cc88', linewidth=1.0,
                     alpha=0.6, linestyle=':', label='base')
 
-            ax.set_title(f"({ii}→{oi})", fontsize=8)
+            ax.set_title(f"({ii}\u2192{oi})", fontsize=8)
             ax.tick_params(labelsize=6)
             ax.grid(True, alpha=0.15)
 
             if row == 0 and col == 0:
                 ax.legend(fontsize=6)
 
-    fig.suptitle(title or "Learned Activation Functions", fontsize=12)
+    layer_label = ""
+    if isinstance(model_or_layer, _get_network_class()):
+        idx = layer if layer is not None else 0
+        layer_label = f" (layer {idx})"
+
+    fig.suptitle(title or f"Learned Activation Functions{layer_label}",
+                 fontsize=12)
     plt.tight_layout()
     return fig
 
 
 def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
     """Plot the full KAN network with learned activation curves on edges.
-
-    For large layers (> max_nodes), only a representative subset of
-    nodes and edges are drawn, with a label showing the true size.
 
     Args:
         model: A KANNetwork instance.
@@ -285,7 +311,6 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
     n_layers = len(layers)
     dims = [layers[0].in_features] + [l.out_features for l in layers]
 
-    # Clamp display dims but remember real dims
     display_dims = [min(d, max_nodes) for d in dims]
     max_display = max(display_dims)
 
@@ -298,7 +323,6 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # Node positions (using display_dims)
     node_x = []
     node_y = []
     for layer_idx in range(n_layers + 1):
@@ -309,11 +333,13 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
         node_x.append(xs)
         node_y.append(ys)
 
-    # Draw edges with mini activation curves
     n_curve_pts = 50
     t_curve = torch.linspace(-1, 1, n_curve_pts)
 
     for li, layer in enumerate(layers):
+        if layer.dim != 1:
+            continue
+
         grid_starts = layer.grid_starts.cpu()
         inv_h = layer.inv_h
         spline_w = layer.spline_weight.detach().cpu()
@@ -331,7 +357,6 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
                 x0, y0 = node_x[li][ii], node_y[li][ii]
                 x1, y1 = node_x[li + 1][oi], node_y[li + 1][oi]
 
-                # Compute activation curve for these (possibly subset) indices
                 w = spline_w[oi, ii, :]
                 activation = (bases * w).sum(dim=-1) + silu_t * base_w[oi, ii]
                 act_np = activation.detach().numpy()
@@ -361,9 +386,9 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
 
                 color = plt.cm.coolwarm(0.5 + strength * 0.5)
                 ax.plot(cx_curved, cy_curved, color=color,
-                        linewidth=0.5 + strength, alpha=0.3 + strength * 0.5)
+                        linewidth=0.5 + strength,
+                        alpha=0.3 + strength * 0.5)
 
-    # Draw nodes
     for layer_idx in range(n_layers + 1):
         d = display_dims[layer_idx]
         for i in range(d):
@@ -377,7 +402,6 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
                     str(i), ha='center', va='center', fontsize=7,
                     color='white', zorder=6)
 
-    # Layer labels (show real dims)
     for li in range(n_layers + 1):
         real = dims[li]
         shown = display_dims[li]
@@ -388,3 +412,9 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
     ax.set_title(title or "KAN Network", fontsize=13, pad=10)
     plt.tight_layout()
     return fig
+
+
+def _get_network_class():
+    """Lazy import to avoid circular dependency."""
+    from inkan.network import KANNetwork
+    return KANNetwork
