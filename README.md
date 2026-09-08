@@ -96,16 +96,18 @@ InKAN includes built-in visualization for learned activation functions and surfa
 ```python
 from inkan import KANNetwork, plot_basis, plot_activations, plot_surface
 
-# 1D: basis bumps and learned activations
-model = KANNetwork([784, 32, 10], grid_size=8)
-plot_basis(model.layers[0])
-plot_activations(model.layers[1])
+model = KANNetwork([784, 32, 10], grid_size=5)
+# ... train ...
+
+# Pick which layer to visualize
+plot_basis(model, layer=0)          # B-spline basis bumps
+plot_activations(model, layer=0)    # learned curves, layer 0
+plot_activations(model, layer=1)    # learned curves, layer 1
 
 # 2D: learned surface
-from inkan import KANLayer
-layer = KANLayer(2, 1, dim=2, grid_size=12)
+net2d = KANNetwork([2, 3], dim=2, grid_size=12)
 # ... train ...
-plot_surface(layer)  # 3D surface + contour plot
+plot_surface(net2d, layer=0)        # 3D surface + contour plot
 ```
 
 ### B-spline basis functions
