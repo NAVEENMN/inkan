@@ -149,3 +149,68 @@ class TestBasisGradients:
         bases = bspline_basis_eager(x, grid_starts, 1.0 / h)
         bases.sum().backward()
         assert torch.isfinite(x.grad).all()
+
+
+class TestUnboundedMode:
+    """Verify bounded=False mode for derivative-consistent evaluation."""
+
+    def test_unbounded_matches_bounded_in_support(self):
+        """Unbounded and bounded should agree for in-support points."""
+        grid_size, spline_order = 5, 3
+        n_bases = grid_size + spline_order
+        h = 2.0 / grid_size
+        grid_starts = torch.arange(n_bases).float() * h - 1.0 - spline_order * h
+
+        x = torch.linspace(-0.9, 0.9, 200).unsqueeze(0)
+        b_bounded = bspline_basis_eager(x, grid_starts, 1.0 / h, bounded=True)
+        b_unbounded = bspline_basis_eager(x, grid_starts, 1.0 / h, bounded=False)
+
+        assert torch.allclose(b_bounded.double(), b_unbounded, atol=1e-5)
+
+    def test_unbounded_returns_float64(self):
+        """Unbounded mode should return float64 for numerical stability."""
+        grid_size = 5
+        n_bases = grid_size + 3
+        h = 2.0 / grid_size
+        grid_starts = torch.arange(n_bases).float() * h - 1.0 - 3 * h
+
+        x = torch.randn(4, 8)  # float32 input
+        bases = bspline_basis_eager(x, grid_starts, 1.0 / h, bounded=False)
+        assert bases.dtype == torch.float64
+
+    def test_unbounded_derivative_consistency(self):
+        """Analytic d1 should match FD of the unbounded value basis."""
+        grid_size = 8
+        n_bases = grid_size + 3
+        h = 2.0 / grid_size
+        inv_h = 1.0 / h
+        grid_starts = torch.arange(n_bases).float() * h - 1.0 - 3 * h
+
+        x = torch.linspace(-0.8, 0.8, 100).unsqueeze(0).double()
+        eps = 1e-5
+
+        b_plus = bspline_basis_eager(x + eps, grid_starts, inv_h, bounded=False)
+        b_minus = bspline_basis_eager(x - eps, grid_starts, inv_h, bounded=False)
+        d1_fd = (b_plus - b_minus) / (2 * eps)
+
+        # Analytic d1: (1/2)[relu(u)^2 - 4*relu(u-1)^2 + ...]
+        u = (x.unsqueeze(-1) - grid_starts.double()) * inv_h
+
+        def relu_sq(t):
+            return torch.relu(t) ** 2
+
+        d1_analytic = 0.5 * (relu_sq(u) - 4 * relu_sq(u - 1) + 6 * relu_sq(u - 2)
+                              - 4 * relu_sq(u - 3) + relu_sq(u - 4)) * inv_h
+
+        assert torch.allclose(d1_analytic, d1_fd, atol=1e-5)
+
+    def test_unbounded_non_negative(self):
+        """Unbounded basis values should be non-negative."""
+        grid_size = 5
+        n_bases = grid_size + 3
+        h = 2.0 / grid_size
+        grid_starts = torch.arange(n_bases).float() * h - 1.0 - 3 * h
+
+        x = torch.randn(64, 32).clamp(-1, 1)
+        bases = bspline_basis_eager(x, grid_starts, 1.0 / h, bounded=False)
+        assert (bases >= -1e-10).all()
