@@ -19,7 +19,7 @@ Example:
     >>> y = layer(x)  # [32, 64]
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.1"
 
 from inkan.layer import KANLayer
 from inkan.network import KANNetwork

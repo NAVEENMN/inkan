@@ -30,6 +30,9 @@ class KANLayer(nn.Module):
         dim: Spline dimension. 1 = univariate (default), 2 = tensor-product surface.
         base_activation: Residual activation function. Default: SiLU.
         grid_range: Range of the input grid. Default: (-1, 1).
+        bounded: If True (default), clamp basis coordinates to [0, 4] for
+            float32 stability. Set to False for derivative-consistent
+            evaluation in float64 (physics/PDE applications).
 
     Shape:
         - dim=1: Input (batch, in_features) -> Output (batch, out_features)
@@ -54,6 +57,7 @@ class KANLayer(nn.Module):
         dim: int = 1,
         base_activation: type = nn.SiLU,
         grid_range: tuple = (-1.0, 1.0),
+        bounded: bool = True,
     ):
         super().__init__()
         if dim not in (1, 2):
@@ -72,6 +76,7 @@ class KANLayer(nn.Module):
         self.grid_size = grid_size
         self.spline_order = spline_order
         self.dim = dim
+        self.bounded = bounded
 
         n_bases = grid_size + spline_order
         self.n_bases = n_bases
@@ -110,10 +115,14 @@ class KANLayer(nn.Module):
 
     def _forward_1d(self, x: torch.Tensor) -> torch.Tensor:
         """1D forward: each edge has a univariate B-spline activation."""
-        bases = bspline_basis(x, self.grid_starts, self.inv_h)
-        spline_out = torch.einsum("bin,oin->bo", bases, self.spline_weight)
-        base_out = torch.einsum(
-            "bi,oi->bo", self.base_activation(x), self.base_weight)
+        bases = bspline_basis(x, self.grid_starts, self.inv_h,
+                              bounded=self.bounded)
+        # unbounded mode returns float64; cast weights to match
+        w = self.spline_weight.to(bases.dtype)
+        spline_out = torch.einsum("bin,oin->bo", bases, w)
+        base_act = self.base_activation(x).to(bases.dtype)
+        bw = self.base_weight.to(bases.dtype)
+        base_out = torch.einsum("bi,oi->bo", base_act, bw)
         return spline_out + base_out
 
     def _forward_2d(self, x: torch.Tensor) -> torch.Tensor:
@@ -123,20 +132,19 @@ class KANLayer(nn.Module):
         y_coord = x[:, 1:2]  # [batch, 1]
 
         # Compute 1D bases independently
-        b_x = bspline_basis(x_coord, self.grid_starts, self.inv_h)
-        b_x = b_x.squeeze(1)  # [batch, K]
-
-        b_y = bspline_basis(y_coord, self.grid_starts, self.inv_h)
-        b_y = b_y.squeeze(1)  # [batch, K]
+        b_x = bspline_basis(x_coord, self.grid_starts, self.inv_h,
+                            bounded=self.bounded).squeeze(1)
+        b_y = bspline_basis(y_coord, self.grid_starts, self.inv_h,
+                            bounded=self.bounded).squeeze(1)
 
         # S(x,y) = b_x^T C b_y per output
-        # spline_weight: [out, K, K], b_x: [batch, K], b_y: [batch, K]
-        spline_out = torch.einsum("bi,oij,bj->bo",
-                                  b_x, self.spline_weight, b_y)
+        w = self.spline_weight.to(b_x.dtype)
+        spline_out = torch.einsum("bi,oij,bj->bo", b_x, w, b_y)
 
         # Residual: base_activation on both coordinates
-        base_act = self.base_activation(x)  # [batch, 2]
-        base_out = torch.einsum("bi,oi->bo", base_act, self.base_weight)
+        base_act = self.base_activation(x).to(b_x.dtype)
+        bw = self.base_weight.to(b_x.dtype)
+        base_out = torch.einsum("bi,oi->bo", base_act, bw)
 
         return spline_out + base_out
 

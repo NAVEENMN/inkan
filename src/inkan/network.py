@@ -26,6 +26,8 @@ class KANNetwork(nn.Module):
         spline_order: Spline degree for all layers. Default: 3.
         dim: Spline dimension for all layers. 1 = univariate (default),
             2 = tensor-product surface (requires first dim to be 2).
+        bounded: If True (default), use clamped basis coordinates. Set
+            to False for derivative-consistent evaluation in float64.
 
     Example:
         >>> net = KANNetwork([784, 128, 64, 10])
@@ -40,6 +42,7 @@ class KANNetwork(nn.Module):
         spline_order: int = 3,
         dim: int = 1,
         grid_range: tuple = (-1.0, 1.0),
+        bounded: bool = True,
     ):
         super().__init__()
         if len(layer_dims) < 2:
@@ -53,7 +56,8 @@ class KANNetwork(nn.Module):
             layers.append(
                 KANLayer(layer_dims[i], layer_dims[i + 1],
                          grid_size=grid_size, spline_order=spline_order,
-                         dim=layer_dim, grid_range=grid_range)
+                         dim=layer_dim, grid_range=grid_range,
+                         bounded=bounded)
             )
         self.layers = nn.ModuleList(layers)
 
