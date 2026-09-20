@@ -19,13 +19,20 @@ class TestKANLayer:
         x = torch.randn(8, 32)
         y = layer(x)
         y.sum().backward()
-        # Gradients flow to the packed weight parameter (1D)
+        # Gradients flow to the packed weight parameter
         assert layer.weight.grad is not None
 
-    def test_parameter_count(self):
+    def test_parameter_count_1d(self):
         layer = KANLayer(32, 16, grid_size=5, spline_order=3)
-        n_bases = 5 + 3  # grid_size + spline_order
+        n_bases = 5 + 3
         expected = 16 * 32 * n_bases + 16 * 32  # spline + base
+        actual = sum(p.numel() for p in layer.parameters())
+        assert actual == expected
+
+    def test_parameter_count_2d(self):
+        layer = KANLayer(2, 4, dim=2, grid_size=5, spline_order=3)
+        n_bases = 5 + 3
+        expected = 4 * (n_bases * n_bases + 2)  # spline K*K + base 2
         actual = sum(p.numel() for p in layer.parameters())
         assert actual == expected
 
@@ -42,6 +49,34 @@ class TestKANLayer:
         x = torch.randn(4, 16)
         y = layer(x)
         assert y.shape == (4, 8)
+
+    def test_basis_mode_dense(self):
+        layer = KANLayer(16, 8, basis_mode="dense")
+        x = torch.randn(4, 16)
+        y = layer(x)
+        assert y.shape == (4, 8)
+        y.sum().backward()
+
+    def test_basis_mode_invalid(self):
+        with pytest.raises(ValueError):
+            KANLayer(16, 8, basis_mode="invalid")
+
+    def test_2d_forward_backward(self):
+        layer = KANLayer(2, 4, dim=2)
+        x = torch.randn(8, 2)
+        y = layer(x)
+        assert y.shape == (8, 4)
+        y.sum().backward()
+        assert layer.weight.grad is not None
+
+    def test_spline_weight_view(self):
+        layer = KANLayer(32, 16, grid_size=5)
+        assert layer.spline_weight.shape == (16, 32, 8)
+        # Writing to view should modify the packed weight
+        with torch.no_grad():
+            layer.spline_weight.fill_(0.0)
+        IK = 32 * 8
+        assert (layer.weight[:, :IK] == 0).all()
 
     def test_repr(self):
         layer = KANLayer(32, 16, grid_size=10)
@@ -94,3 +129,7 @@ class TestKANNetwork:
     def test_invalid_dims(self):
         with pytest.raises(ValueError):
             KANNetwork([8])
+
+    def test_basis_mode_passthrough(self):
+        net = KANNetwork([8, 4], basis_mode="dense")
+        assert net.layers[0].basis_mode == "dense"

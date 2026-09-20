@@ -29,6 +29,7 @@ class KANNetwork(nn.Module):
         compile_basis: If True (default), use torch.compile for basis
             computation. Set to False for eager mode (PINN/higher-order
             autograd).
+        basis_mode: "local" (default) or "dense". See KANLayer.
 
     Example:
         >>> net = KANNetwork([784, 128, 64, 10])
@@ -44,6 +45,7 @@ class KANNetwork(nn.Module):
         dim: int = 1,
         grid_range: tuple = (-1.0, 1.0),
         compile_basis: bool = True,
+        basis_mode: str = "local",
     ):
         super().__init__()
         if len(layer_dims) < 2:
@@ -58,7 +60,8 @@ class KANNetwork(nn.Module):
                 KANLayer(layer_dims[i], layer_dims[i + 1],
                          grid_size=grid_size, spline_order=spline_order,
                          dim=layer_dim, grid_range=grid_range,
-                         compile_basis=compile_basis)
+                         compile_basis=compile_basis,
+                         basis_mode=basis_mode)
             )
         self.layers = nn.ModuleList(layers)
 

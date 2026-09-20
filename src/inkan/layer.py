@@ -16,6 +16,14 @@ import torch.nn.functional as F
 from inkan.basis import (bspline_basis, bspline_basis_eager,
                          bspline_basis_local, bspline_basis_local_eager)
 
+# Basis function lookup: (basis_mode, compile_basis) -> function
+_BASIS_FNS = {
+    ("dense", True): bspline_basis,
+    ("dense", False): bspline_basis_eager,
+    ("local", True): bspline_basis_local,
+    ("local", False): bspline_basis_local_eager,
+}
+
 
 class KANLayer(nn.Module):
     """Kolmogorov-Arnold Network layer with fast B-spline activations.
@@ -24,6 +32,9 @@ class KANLayer(nn.Module):
     Produces exact B-spline values with compact support, C2 continuity,
     and partition of unity on the configured grid range (up to
     floating-point error).
+
+    Both 1D and 2D layers pack spline and residual weights into a
+    single parameter and use one F.linear call per forward pass.
 
     Args:
         in_features: Size of each input sample. For dim=2, must be 2.
@@ -37,6 +48,10 @@ class KANLayer(nn.Module):
             computation. Set to False for eager-mode execution, which
             supports higher-order autograd (e.g. double backward for
             PDE/PINN applications).
+        basis_mode: "local" (default) uses span lookup to evaluate only
+            the 4 active bases per input. "dense" evaluates all K bases.
+            Local is faster for large grids; dense may be preferable for
+            small grids or when profiling shows scatter overhead dominates.
 
     Shape:
         - dim=1: Input (batch, in_features) -> Output (batch, out_features)
@@ -62,6 +77,7 @@ class KANLayer(nn.Module):
         base_activation: type = nn.SiLU,
         grid_range: tuple = (-1.0, 1.0),
         compile_basis: bool = True,
+        basis_mode: str = "local",
     ):
         super().__init__()
         if dim not in (1, 2):
@@ -74,16 +90,16 @@ class KANLayer(nn.Module):
                 f"Got spline_order={spline_order}. General-degree support is "
                 f"planned for a future release."
             )
+        if basis_mode not in ("dense", "local"):
+            raise ValueError(f"basis_mode must be 'dense' or 'local', got '{basis_mode}'")
 
         self.in_features = in_features
         self.out_features = out_features
         self.grid_size = grid_size
         self.spline_order = spline_order
         self.dim = dim
-        if compile_basis:
-            self._basis_fn = bspline_basis_local
-        else:
-            self._basis_fn = bspline_basis_local_eager
+        self.basis_mode = basis_mode
+        self._basis_fn = _BASIS_FNS[(basis_mode, compile_basis)]
 
         n_bases = grid_size + spline_order
         self.n_bases = n_bases
@@ -94,19 +110,16 @@ class KANLayer(nn.Module):
                        + grid_range[0] - spline_order * h)
         self.register_buffer("grid_starts", grid_starts)
 
+        # Packed weight: single parameter for both spline and residual.
+        # 1D: [O, I*K + I]     features = [bases.flat | silu(x)]
+        # 2D: [O, K*K + 2]     features = [outer_product.flat | silu(x), silu(y)]
         if dim == 1:
-            # Packed weight: [O, I*K + I] = [spline | base] in one parameter.
-            # One F.linear call replaces two separate matmuls + addition.
-            self.weight = nn.Parameter(
-                torch.empty(out_features, in_features * (n_bases + 1)))
+            n_spline_features = in_features * n_bases
         else:
-            # 2D: coefficient matrix C per output: [out, K, K]
-            # Not packed — the 3-operand tensor-product contraction
-            # doesn't reduce to a single matmul.
-            self._spline_weight = nn.Parameter(
-                torch.empty(out_features, n_bases, n_bases))
-            self._base_weight = nn.Parameter(
-                torch.empty(out_features, 2))
+            n_spline_features = n_bases * n_bases
+
+        self.weight = nn.Parameter(
+            torch.empty(out_features, n_spline_features + in_features))
 
         self.base_activation = base_activation()
         self.reset_parameters()
@@ -117,20 +130,31 @@ class KANLayer(nn.Module):
 
     @property
     def spline_weight(self) -> torch.Tensor:
-        """Spline coefficients. For 1D: view of shape [O, I, K] into packed weight."""
+        """Spline coefficients as a view into the packed weight.
+
+        Returns:
+            1D: [O, I, K], 2D: [O, K, K]
+        """
         if self.dim == 1:
-            IK = self.in_features * self.n_bases
-            return self.weight[:, :IK].reshape(
+            n = self.in_features * self.n_bases
+            return self.weight[:, :n].reshape(
                 self.out_features, self.in_features, self.n_bases)
-        return self._spline_weight
+        n = self.n_bases * self.n_bases
+        return self.weight[:, :n].reshape(
+            self.out_features, self.n_bases, self.n_bases)
 
     @property
     def base_weight(self) -> torch.Tensor:
-        """Residual weights. For 1D: view of shape [O, I] into packed weight."""
+        """Residual weights as a view into the packed weight.
+
+        Returns:
+            1D: [O, I], 2D: [O, 2]
+        """
         if self.dim == 1:
-            IK = self.in_features * self.n_bases
-            return self.weight[:, IK:]
-        return self._base_weight
+            n = self.in_features * self.n_bases
+        else:
+            n = self.n_bases * self.n_bases
+        return self.weight[:, n:]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.dim == 1:
@@ -147,28 +171,27 @@ class KANLayer(nn.Module):
         """
         batch = x.shape[0]
         bases = self._basis_fn(x, self.grid_starts, self.inv_h, self.n_bases)
-        # [B, I*K | I] = [spline features | residual features]
         features = torch.cat([bases.reshape(batch, -1),
                               self.base_activation(x)], dim=1)
         return F.linear(features, self.weight)
 
     def _forward_2d(self, x: torch.Tensor) -> torch.Tensor:
-        """2D forward: tensor-product surface S(x,y) = b_x^T C b_y."""
-        # Compute bases for both coordinates in one call
-        bases = self._basis_fn(x, self.grid_starts, self.inv_h, self.n_bases)  # [B, 2, K]
+        """2D forward: tensor-product surface via outer-product features.
+
+        Computes outer product b_x (x) b_y^T, flattens to [B, K*K],
+        concatenates with residual [B, 2], and contracts with packed
+        weight [O, K*K+2] in a single F.linear call.
+        """
+        bases = self._basis_fn(x, self.grid_starts, self.inv_h, self.n_bases)
         b_x = bases[:, 0, :]  # [B, K]
         b_y = bases[:, 1, :]  # [B, K]
 
-        # S(x,y) = b_x^T C b_y per output
-        # Contract right first: [O, K, K] @ [B, K, 1] -> [O, B, K] via matmul
-        # Then dot with b_x. einsum is clearest here and matches BLAS for 3-operand.
-        spline_out = torch.einsum("bi,oij,bj->bo", b_x, self.spline_weight, b_y)
+        # Tensor-product features: outer product flattened to [B, K*K]
+        surface_features = (b_x.unsqueeze(-1) * b_y.unsqueeze(-2)).flatten(1)
 
-        # Residual: base_activation on both coordinates
-        base_act = self.base_activation(x)
-        base_out = F.linear(base_act, self.base_weight)
-
-        return spline_out + base_out
+        features = torch.cat([surface_features,
+                              self.base_activation(x)], dim=1)
+        return F.linear(features, self.weight)
 
     def extra_repr(self) -> str:
         parts = [f"in_features={self.in_features}",
@@ -177,4 +200,6 @@ class KANLayer(nn.Module):
                  f"spline_order={self.spline_order}"]
         if self.dim == 2:
             parts.append(f"dim={self.dim}")
+        if self.basis_mode != "local":
+            parts.append(f"basis_mode='{self.basis_mode}'")
         return ", ".join(parts)
