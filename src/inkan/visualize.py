@@ -26,7 +26,7 @@ try:
 except ImportError:
     HAS_MPL = False
 
-from inkan.basis import bspline_basis_eager
+from inkan.basis import bspline_basis_eager, bspline_basis_local_eager
 
 
 def _check_matplotlib():
@@ -38,15 +38,7 @@ def _check_matplotlib():
 
 
 def _resolve_layer(model_or_layer, layer=None):
-    """Resolve a KANLayer from either a layer or a network + index.
-
-    Args:
-        model_or_layer: A KANLayer or KANNetwork instance.
-        layer: Layer index when a KANNetwork is passed. Default: 0.
-
-    Returns:
-        A KANLayer instance.
-    """
+    """Resolve a KANLayer from either a layer or a network + index."""
     from inkan.layer import KANLayer
     from inkan.network import KANNetwork
 
@@ -66,6 +58,32 @@ def _resolve_layer(model_or_layer, layer=None):
 
     raise TypeError(
         f"Expected KANLayer or KANNetwork, got {type(model_or_layer).__name__}")
+
+
+def _eval_basis(kan_layer, x):
+    """Evaluate basis functions using the layer's basis mode.
+
+    Args:
+        kan_layer: A KANLayer instance.
+        x: Input tensor [1, n_points] or [n_points, 1].
+
+    Returns:
+        Basis values tensor (squeezed to 2D).
+    """
+    fn = (bspline_basis_local_eager
+          if kan_layer.basis_mode == "local"
+          else bspline_basis_eager)
+    grid_starts = kan_layer.grid_starts.cpu()
+    return fn(x, grid_starts, kan_layer.inv_h, kan_layer.n_bases)
+
+
+def _get_grid_range(kan_layer):
+    """Recover the grid range from the layer's grid_starts and inv_h."""
+    h = 1.0 / kan_layer.inv_h
+    # grid_starts[0] = grid_range[0] - spline_order * h
+    x_min = kan_layer.grid_starts[0].item() + kan_layer.spline_order * h
+    x_max = x_min + kan_layer.grid_size * h
+    return x_min, x_max
 
 
 def plot_basis(model_or_layer, layer=None, n_points=500, figsize=None,
@@ -90,13 +108,14 @@ def plot_basis(model_or_layer, layer=None, n_points=500, figsize=None,
     grid_starts = kan_layer.grid_starts.cpu()
     inv_h = kan_layer.inv_h
     h = 1.0 / inv_h
-    n_bases = len(grid_starts)
+    n_bases = kan_layer.n_bases
+    grid_min, grid_max = _get_grid_range(kan_layer)
 
     x_min = grid_starts[0].item()
     x_max = grid_starts[-1].item() + 4 * h
     x = torch.linspace(x_min, x_max, n_points)
 
-    bases = bspline_basis_eager(x.unsqueeze(0), grid_starts, inv_h)
+    bases = _eval_basis(kan_layer, x.unsqueeze(0))
     bases = bases.squeeze(0).detach().numpy()
     x_np = x.numpy()
 
@@ -113,9 +132,9 @@ def plot_basis(model_or_layer, layer=None, n_points=500, figsize=None,
         ax.plot(x_np[peak_idx], bases[peak_idx, i], 'o',
                 color=colors[i], markersize=4)
 
-    ax.axvline(x=-1.0, color='gray', linestyle='--', alpha=0.3,
+    ax.axvline(x=grid_min, color='gray', linestyle='--', alpha=0.3,
                label='grid range')
-    ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.3)
+    ax.axvline(x=grid_max, color='gray', linestyle='--', alpha=0.3)
 
     knot_positions = grid_starts.numpy() + 2 * h
     for kp in knot_positions:
@@ -136,7 +155,9 @@ def plot_surface(model_or_layer, layer=None, n_points=50, out_idx=0,
                  figsize=None, title=None):
     """Plot the learned 2D tensor-product B-spline surface.
 
-    Shows S(x,y) = b_x^T C b_y as a 3D surface plot and a contour plot.
+    Evaluates the actual layer forward pass under torch.no_grad()
+    to ensure consistency with the layer's activation, basis mode,
+    device, and dtype.
 
     Args:
         model_or_layer: A KANLayer (dim=2) or KANNetwork instance.
@@ -157,29 +178,17 @@ def plot_surface(model_or_layer, layer=None, n_points=50, out_idx=0,
     if kan_layer.dim != 2:
         raise ValueError("plot_surface requires a dim=2 KANLayer")
 
-    grid_starts = kan_layer.grid_starts.cpu()
-    inv_h = kan_layer.inv_h
-    C = kan_layer.spline_weight[out_idx].detach().cpu()
-    base_w = kan_layer.base_weight[out_idx].detach().cpu()
+    grid_min, grid_max = _get_grid_range(kan_layer)
 
-    x_lin = torch.linspace(-1, 1, n_points)
-    y_lin = torch.linspace(-1, 1, n_points)
+    x_lin = torch.linspace(grid_min, grid_max, n_points)
+    y_lin = torch.linspace(grid_min, grid_max, n_points)
     xx, yy = torch.meshgrid(x_lin, y_lin, indexing="ij")
 
-    b_x_vals = bspline_basis_eager(x_lin.unsqueeze(1), grid_starts, inv_h)
-    b_x_vals = b_x_vals.squeeze(1)
-
-    b_y_vals = bspline_basis_eager(y_lin.unsqueeze(1), grid_starts, inv_h)
-    b_y_vals = b_y_vals.squeeze(1)
-
-    zz_spline = torch.einsum("ik,kl,jl->ij", b_x_vals, C, b_y_vals)
-
-    silu = torch.nn.functional.silu
-    base_x = silu(x_lin) * base_w[0]
-    base_y = silu(y_lin) * base_w[1]
-    zz_base = base_x.unsqueeze(1) + base_y.unsqueeze(0)
-
-    zz = (zz_spline + zz_base).detach().numpy()
+    # Evaluate through the actual layer for full consistency
+    xy_flat = torch.stack([xx.flatten(), yy.flatten()], dim=1)
+    with torch.no_grad():
+        zz_flat = kan_layer(xy_flat)[:, out_idx]
+    zz = zz_flat.reshape(n_points, n_points).detach().numpy()
     xx_np = xx.numpy()
     yy_np = yy.numpy()
 
@@ -213,10 +222,12 @@ def plot_activations(model_or_layer, layer=None, n_points=500,
     """Plot the learned activation functions for each edge.
 
     Each subplot shows one edge's activation: the weighted sum of
-    basis functions plus the SiLU residual.
+    basis functions plus the residual activation.
+
+    Only supports dim=1 layers. For dim=2, use plot_surface instead.
 
     Args:
-        model_or_layer: A KANLayer or KANNetwork instance.
+        model_or_layer: A KANLayer (dim=1) or KANNetwork instance.
         layer: Layer index when a KANNetwork is passed. Default: 0.
         n_points: Number of sample points.
         in_idx: Which input features to show. Default: all (capped at 8).
@@ -230,6 +241,11 @@ def plot_activations(model_or_layer, layer=None, n_points=500,
     _check_matplotlib()
     kan_layer = _resolve_layer(model_or_layer, layer)
 
+    if kan_layer.dim != 1:
+        raise ValueError(
+            "plot_activations only supports dim=1 layers. "
+            "Use plot_surface for dim=2 layers.")
+
     max_show = 8
     if in_idx is None:
         in_idx = list(range(min(kan_layer.in_features, max_show)))
@@ -239,15 +255,17 @@ def plot_activations(model_or_layer, layer=None, n_points=500,
     n_in = len(in_idx)
     n_out = len(out_idx)
 
-    grid_starts = kan_layer.grid_starts.cpu()
-    inv_h = kan_layer.inv_h
     spline_w = kan_layer.spline_weight.detach().cpu()
     base_w = kan_layer.base_weight.detach().cpu()
 
-    x = torch.linspace(-1.0, 1.0, n_points)
-    bases = bspline_basis_eager(x.unsqueeze(0), grid_starts, inv_h)
+    grid_min, grid_max = _get_grid_range(kan_layer)
+    x = torch.linspace(grid_min, grid_max, n_points)
+
+    bases = _eval_basis(kan_layer, x.unsqueeze(0))
     bases = bases.squeeze(0)
-    silu_x = torch.nn.functional.silu(x)
+
+    # Use the layer's actual activation, not hard-coded SiLU
+    act_x = kan_layer.base_activation(x)
 
     if figsize is None:
         figsize = (2.5 * n_in, 2.2 * n_out)
@@ -262,7 +280,7 @@ def plot_activations(model_or_layer, layer=None, n_points=500,
             spline_y = (bases * w).sum(dim=-1).numpy()
 
             bw = base_w[oi, ii].item()
-            base_y = (silu_x * bw).numpy()
+            base_y = (act_x * bw).numpy()
 
             total_y = spline_y + base_y
 
@@ -334,20 +352,20 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
         node_y.append(ys)
 
     n_curve_pts = 50
-    t_curve = torch.linspace(-1, 1, n_curve_pts)
 
     for li, layer in enumerate(layers):
         if layer.dim != 1:
             continue
 
-        grid_starts = layer.grid_starts.cpu()
-        inv_h = layer.inv_h
         spline_w = layer.spline_weight.detach().cpu()
         base_w = layer.base_weight.detach().cpu()
 
-        bases = bspline_basis_eager(t_curve.unsqueeze(0), grid_starts, inv_h)
+        grid_min, grid_max = _get_grid_range(layer)
+        t_curve = torch.linspace(grid_min, grid_max, n_curve_pts)
+
+        bases = _eval_basis(layer, t_curve.unsqueeze(0))
         bases = bases.squeeze(0)
-        silu_t = torch.nn.functional.silu(t_curve)
+        act_t = layer.base_activation(t_curve)
 
         d_in = display_dims[li]
         d_out = display_dims[li + 1]
@@ -358,7 +376,7 @@ def plot_network(model, x=None, max_nodes=16, figsize=None, title=None):
                 x1, y1 = node_x[li + 1][oi], node_y[li + 1][oi]
 
                 w = spline_w[oi, ii, :]
-                activation = (bases * w).sum(dim=-1) + silu_t * base_w[oi, ii]
+                activation = (bases * w).sum(dim=-1) + act_t * base_w[oi, ii]
                 act_np = activation.detach().numpy()
 
                 act_range = act_np.max() - act_np.min()

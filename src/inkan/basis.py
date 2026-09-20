@@ -21,7 +21,8 @@ Two evaluation modes:
 
 - **local** (``_bspline_basis_local``): finds the 4 active bases per
   input via floor() span lookup, evaluates only those 4, scatters into
-  dense output. Faster when K is large; see benchmarks for crossover.
+  dense output. May be faster for large K; benchmark on the target
+  workload to determine the crossover point.
 
 Algebraically equivalent to Cox-de Boor recursion for uniform cubic
 splines. Output is guaranteed non-negative. Partition of unity holds
@@ -55,17 +56,22 @@ def _bspline_basis(x: torch.Tensor, grid_starts: torch.Tensor,
     """Compute B-spline basis values for all inputs and all basis functions.
 
     Dense evaluation: computes all K basis values per input.
+    Uses grid_starts[0] as canonical origin with integer offsets
+    for consistent coordinates with the local path.
 
     Args:
         x: Input tensor [batch, in_features].
         grid_starts: Start position of each basis function's support [n_bases].
         inv_h: Reciprocal of knot spacing (1/h).
-        n_bases: Total number of basis functions (unused, for API compat).
+        n_bases: Total number of basis functions.
 
     Returns:
         Basis values [batch, in_features, n_bases].
     """
-    u = (x.unsqueeze(-1) - grid_starts) * inv_h
+    # Use canonical origin for coordinate consistency with local path
+    t0 = (x - grid_starts[0]) * inv_h  # [B, I]
+    offsets = torch.arange(n_bases, device=t0.device, dtype=t0.dtype)
+    u = t0.unsqueeze(-1) - offsets  # [B, I, K]
     return _piecewise_eval(u)
 
 
