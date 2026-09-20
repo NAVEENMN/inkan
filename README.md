@@ -1,0 +1,241 @@
+# InKAN
+
+Fast, stable uniform cubic B-spline [Kolmogorov-Arnold Network](https://arxiv.org/abs/2404.19756) layers for PyTorch.
+
+Evaluates B-spline basis functions via a stable piecewise polynomial with local 4-basis evaluation. **2.8--5.4x lower forward-pass latency** than recursive implementations, with guaranteed non-negative output and float32 accuracy ~1.2e-7.
+
+Supports 1D univariate splines and 2D tensor-product B-spline surfaces.
+
+## How it works
+
+Standard KAN implementations compute B-spline basis functions using the Cox-de Boor recursion: 3 sequential passes for cubic splines, each creating intermediate tensors. InKAN uses two key optimizations:
+
+**1. Stable piecewise polynomial** — evaluates the cubic B-spline directly on each of its 4 segments, avoiding the catastrophic cancellation of alternating-sum formulations:
+
+```
+Segment [0, 1]:  N(u) = u³ / 6
+Segment [1, 2]:  N(u) = (1 + 3v + 3v² - 3v³) / 6,  v = u - 1
+Segments [2, 4]: mirror of the above
+```
+
+**2. Local 4-basis evaluation** — each input activates at most 4 of K basis functions. A `floor()` span lookup finds the active bases, evaluating polynomial on `[B, I, 4]` instead of `[B, I, K]`. At grid_size=50, this is 5.4x faster than dense evaluation.
+
+The 1D forward pass packs spline features and residual (SiLU) activation into one feature vector and contracts with a single `F.linear` call dispatched to optimized BLAS.
+
+## Installation
+
+```bash
+pip install inkan
+```
+
+**Requirements:** Python >= 3.9, PyTorch >= 2.0
+
+**Supported devices:** CPU, CUDA (NVIDIA), MPS (Apple Silicon)
+
+### From source
+
+```bash
+git clone https://github.com/NAVEENMN/inkan.git
+cd inkan
+pip install -e .
+```
+
+## Quick start
+
+### 1D (default)
+
+```python
+import torch
+from inkan import KANLayer, KANNetwork
+
+# Drop-in replacement for nn.Linear
+layer = KANLayer(784, 64)
+x = torch.randn(32, 784)
+y = layer(x)  # [32, 64]
+
+# Multi-layer network
+net = KANNetwork([784, 64, 10])
+y = net(torch.randn(32, 784))  # [32, 10]
+```
+
+### 2D tensor-product surface
+
+```python
+from inkan import KANLayer
+
+# Learns S(x,y) = b_x^T C b_y (no recursion)
+layer = KANLayer(2, 1, dim=2, grid_size=12)
+xy = torch.randn(32, 2)
+z = layer(xy)  # [32, 1]
+
+# Multi-output for parametric surfaces (R^2 -> R^3)
+layer = KANLayer(2, 3, dim=2, grid_size=12)
+xyz = layer(uv)  # [32, 3]
+```
+
+### MNIST example
+
+```python
+import torch
+import torch.nn as nn
+from inkan import KANNetwork
+
+model = KANNetwork([784, 64, 10])
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+criterion = nn.CrossEntropyLoss()
+
+# Standard PyTorch training loop
+for images, labels in train_loader:
+    output = model(images.view(-1, 784))
+    loss = criterion(output, labels)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+```
+
+See [`examples/`](examples/) for complete runnable scripts.
+
+## Visualization
+
+InKAN includes built-in visualization for learned activation functions and surfaces.
+
+```python
+from inkan import KANNetwork, plot_basis, plot_activations, plot_surface
+
+model = KANNetwork([784, 32, 10], grid_size=5)
+# ... train ...
+
+# Pick which layer to visualize
+plot_basis(model, layer=0)          # B-spline basis bumps
+plot_activations(model, layer=0)    # learned curves, layer 0
+plot_activations(model, layer=1)    # learned curves, layer 1
+
+# 2D: learned surface
+net2d = KANNetwork([2, 3], dim=2, grid_size=12)
+# ... train ...
+plot_surface(net2d, layer=0)        # 3D surface + contour plot
+```
+
+### B-spline basis functions
+
+The 8 basis bumps (grid_size=5, degree=3), compact support, smooth overlap:
+
+![Basis functions](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/basis.png)
+
+### Learned activation functions
+
+After training on MNIST, each edge learns a unique activation curve.
+Cyan = total, red dashed = spline component, green dotted = SiLU base:
+
+![Learned activations](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/activations.png)
+
+### 2D learned surface
+
+Tensor-product B-spline surface fitting sin(pi*x)*sin(pi*y) with 227 parameters:
+
+![2D surface](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/surface_2d.png)
+
+### Network diagram
+
+Full [784 → 32 → 10] network with learned curves on edges:
+
+![Network diagram](https://raw.githubusercontent.com/NAVEENMN/inkan/main/assets/network.png)
+
+## API
+
+### `KANLayer(in_features, out_features, grid_size=5, spline_order=3, dim=1, grid_range=(-1, 1), compile_basis=True)`
+
+A single KAN layer. Drop-in replacement for `nn.Linear`.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `in_features` | -- | Input dimension (must be 2 for dim=2) |
+| `out_features` | -- | Output dimension |
+| `grid_size` | 5 | Number of knot intervals (more = finer approximation) |
+| `spline_order` | 3 | B-spline degree (only 3 is currently supported) |
+| `dim` | 1 | 1 = univariate spline per edge, 2 = tensor-product surface |
+| `grid_range` | (-1, 1) | Input range for the spline grid |
+| `compile_basis` | True | Use `torch.compile` for basis. Set False for PINN/higher-order autograd |
+
+### `KANNetwork(layer_dims, grid_size=5, spline_order=3, dim=1, grid_range=(-1, 1), compile_basis=True)`
+
+Stack of KAN layers.
+
+```python
+# 1D: 3-layer KAN
+net = KANNetwork([784, 128, 64, 10])
+
+# 2D: first layer is tensor-product, rest are 1D
+net = KANNetwork([2, 8, 1], dim=2, grid_size=12)
+```
+
+## Benchmarks
+
+### Basis computation speedup (local 4-basis vs dense, MPS)
+
+| Grid size | K (n_bases) | Dense (ms) | Local (ms) | Speedup |
+|---|---|---|---|---|
+| 5 | 8 | 0.819 | 0.620 | **1.32x** |
+| 10 | 13 | 1.178 | 0.653 | **1.80x** |
+| 20 | 23 | 2.206 | 0.731 | **3.02x** |
+| 50 | 53 | 5.126 | 0.959 | **5.35x** |
+
+### Speed vs other KAN implementations (H100 CUDA, forward pass, batch=256)
+
+| Method | dim=784 | dim=3072 |
+|---|---|---|
+| **InKAN** | **0.253 ms** | **0.264 ms** |
+| Efficient-KAN (Cox-de Boor) | 0.722 ms | 0.919 ms |
+| FastKAN (Gaussian RBF) | 0.230 ms | 0.256 ms |
+
+### Numerical accuracy
+
+| Property | Value |
+|---|---|
+| Max float32 error vs Cox-de Boor | ~1.2e-7 |
+| Partition-of-unity error (grid=5) | 3.6e-7 |
+| Negative basis values | **Never** (guaranteed) |
+
+## B-spline properties preserved
+
+Algebraically equivalent to Cox-de Boor for uniform cubic splines:
+
+- **Compact support**: each basis function is exactly zero outside its knot span window
+- **C2 continuity**: second derivatives are continuous at every knot (N=N'=N''=0 at support boundaries)
+- **Partition of unity**: basis values sum to 1 on the configured grid range (up to floating-point error)
+- **Non-negativity**: all basis values >= 0 (guaranteed by the piecewise polynomial formulation)
+
+## Limitations
+
+- **Cubic only**: currently supports spline_order=3. Other degrees are rejected with a clear error.
+- **Uniform grids only**: non-uniform knot vectors are not supported. Adaptive grid refinement requires per-span coefficients.
+- **dim=2 first layer only**: KANNetwork with dim=2 uses a tensor-product surface in the first layer; subsequent layers are 1D.
+
+## Project structure
+
+```
+src/inkan/
+├── __init__.py      # Public API
+├── basis.py         # Piecewise polynomial basis + local 4-basis evaluation + torch.compile
+├── layer.py         # KANLayer (dim=1 packed matmul, dim=2 tensor-product)
+├── network.py       # KANNetwork
+└── visualize.py     # plot_basis, plot_activations, plot_surface, plot_network
+```
+
+## Citation
+
+If you use InKAN in your research, please cite:
+
+```bibtex
+@article{mysore2026inkan,
+  title={InKAN: B-Spline KANs via Truncated Power Form},
+  author={Mysore, Naveen},
+  journal={arXiv preprint arXiv:2609.01956},
+  year={2026},
+  url={https://github.com/NAVEENMN/inkan}
+}
+```
+
+## License
+
+MIT
