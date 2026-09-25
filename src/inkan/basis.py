@@ -117,6 +117,32 @@ def _bspline_basis_local(x: torch.Tensor, grid_starts: torch.Tensor,
     return bases.scatter(2, idx, bases_local)
 
 
+def _local_values(x: torch.Tensor, grid_starts: torch.Tensor,
+                  inv_h: float, n_bases: int):
+    """Compute indices and values for the 4 active bases per input.
+
+    Returns the raw local representation without scattering into a
+    dense tensor.  Used by direct contraction paths that gather
+    coefficients by index rather than multiplying through zeros.
+
+    Args:
+        x: Input tensor [batch, in_features].
+        grid_starts: Start position of each basis function's support [n_bases].
+        inv_h: Reciprocal of knot spacing (1/h).
+        n_bases: Total number of basis functions.
+
+    Returns:
+        indices: [batch, in_features, 4] long tensor of active basis indices.
+        values:  [batch, in_features, 4] tensor of corresponding basis values.
+    """
+    t0 = (x - grid_starts[0]) * inv_h
+    j_start = (t0.floor().long() - 3).clamp(0, n_bases - 4)
+    offsets = torch.arange(4, device=x.device)
+    indices = j_start.unsqueeze(-1) + offsets
+    u = t0.unsqueeze(-1) - j_start.unsqueeze(-1).to(t0.dtype) - offsets.to(t0.dtype)
+    return indices, _piecewise_eval(u)
+
+
 # torch.compile can fuse the elementwise basis computation on
 # supported backends (CUDA, MPS, CPU). Actual fusion depends on
 # backend and torch version.
@@ -128,3 +154,4 @@ bspline_basis_local = torch.compile(_bspline_basis_local)
 # not support). Use compile_basis=False in KANLayer to select this.
 bspline_basis_eager = _bspline_basis
 bspline_basis_local_eager = _bspline_basis_local
+local_values = _local_values

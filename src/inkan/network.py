@@ -30,6 +30,7 @@ class KANNetwork(nn.Module):
             computation. Set to False for eager mode (PINN/higher-order
             autograd).
         basis_mode: "local" (default) or "dense". See KANLayer.
+        contraction: "auto" (default), "dense", or "direct". See KANLayer.
 
     Example:
         >>> net = KANNetwork([784, 128, 64, 10])
@@ -46,6 +47,7 @@ class KANNetwork(nn.Module):
         grid_range: tuple = (-1.0, 1.0),
         compile_basis: bool = True,
         basis_mode: str = "local",
+        contraction: str = "auto",
     ):
         super().__init__()
         if len(layer_dims) < 2:
@@ -61,7 +63,8 @@ class KANNetwork(nn.Module):
                          grid_size=grid_size, spline_order=spline_order,
                          dim=layer_dim, grid_range=grid_range,
                          compile_basis=compile_basis,
-                         basis_mode=basis_mode)
+                         basis_mode=basis_mode,
+                         contraction=contraction)
             )
         self.layers = nn.ModuleList(layers)
 

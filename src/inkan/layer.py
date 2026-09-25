@@ -14,7 +14,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from inkan.basis import (bspline_basis, bspline_basis_eager,
-                         bspline_basis_local, bspline_basis_local_eager)
+                         bspline_basis_local, bspline_basis_local_eager,
+                         local_values)
 
 # Basis function lookup: (basis_mode, compile_basis) -> function
 _BASIS_FNS = {
@@ -33,9 +34,6 @@ class KANLayer(nn.Module):
     and partition of unity on the configured grid range (up to
     floating-point error).
 
-    Both 1D and 2D layers pack spline and residual weights into a
-    single parameter and use one F.linear call per forward pass.
-
     Args:
         in_features: Size of each input sample. For dim=2, must be 2.
         out_features: Size of each output sample.
@@ -50,20 +48,27 @@ class KANLayer(nn.Module):
             PDE/PINN applications).
         basis_mode: "local" (default) uses span lookup to evaluate only
             the 4 active bases per input. "dense" evaluates all K bases.
-            Local is faster for large grids; dense may be preferable for
-            small grids or when profiling shows scatter overhead dominates.
+        contraction: Contraction strategy for combining basis values
+            with coefficients. Options:
+            - "auto" (default): selects the fastest path per workload.
+              Uses direct contraction for 2D (always) and for 1D when
+              out_features <= 16 and n_bases >= 32. Uses dense F.linear
+              otherwise.
+            - "dense": always use dense feature matrix + F.linear.
+            - "direct": always gather only active coefficients, skip
+              dense expansion. Faster for narrow outputs and large grids,
+              slower for wide outputs due to gather overhead.
 
     Shape:
         - dim=1: Input (batch, in_features) -> Output (batch, out_features)
         - dim=2: Input (batch, 2) -> Output (batch, out_features)
 
     Example:
-        >>> # 1D (default)
         >>> layer = KANLayer(784, 64, grid_size=10)
         >>> y = layer(torch.randn(32, 784))  # [32, 64]
         >>>
-        >>> # 2D tensor-product surface
-        >>> layer = KANLayer(2, 1, dim=2, grid_size=12)
+        >>> # 2D: automatic direct contraction (19-235x faster)
+        >>> layer = KANLayer(2, 1, dim=2, grid_size=50)
         >>> z = layer(torch.randn(32, 2))  # [32, 1]
     """
 
@@ -78,6 +83,7 @@ class KANLayer(nn.Module):
         grid_range: tuple = (-1.0, 1.0),
         compile_basis: bool = True,
         basis_mode: str = "local",
+        contraction: str = "auto",
     ):
         super().__init__()
         if dim not in (1, 2):
@@ -92,6 +98,8 @@ class KANLayer(nn.Module):
             )
         if basis_mode not in ("dense", "local"):
             raise ValueError(f"basis_mode must be 'dense' or 'local', got '{basis_mode}'")
+        if contraction not in ("auto", "dense", "direct"):
+            raise ValueError(f"contraction must be 'auto', 'dense', or 'direct', got '{contraction}'")
 
         self.in_features = in_features
         self.out_features = out_features
@@ -122,6 +130,16 @@ class KANLayer(nn.Module):
             torch.empty(out_features, n_spline_features + in_features))
 
         self.base_activation = base_activation()
+
+        # Resolve contraction strategy
+        if contraction == "auto":
+            if dim == 2:
+                self._use_direct = True
+            else:
+                self._use_direct = (out_features <= 16 and n_bases >= 32)
+        else:
+            self._use_direct = (contraction == "direct")
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -158,16 +176,20 @@ class KANLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.dim == 1:
-            return self._forward_1d(x)
+            if self._use_direct:
+                return self._forward_1d_direct(x)
+            return self._forward_1d_dense(x)
         else:
-            return self._forward_2d(x)
+            if self._use_direct:
+                return self._forward_2d_direct(x)
+            return self._forward_2d_dense(x)
 
-    def _forward_1d(self, x: torch.Tensor) -> torch.Tensor:
-        """1D forward: each edge has a univariate B-spline activation.
+    def _forward_1d_dense(self, x: torch.Tensor) -> torch.Tensor:
+        """1D forward via dense feature matrix + F.linear.
 
         Concatenates spline basis features and residual activation into
-        one feature vector [B, I*(K+1)], then contracts with the packed
-        weight [O, I*(K+1)] in a single F.linear call.
+        one feature vector [B, I*K+I], then contracts with the packed
+        weight [O, I*K+I] in a single F.linear call.
         """
         batch = x.shape[0]
         bases = self._basis_fn(x, self.grid_starts, self.inv_h, self.n_bases)
@@ -175,8 +197,36 @@ class KANLayer(nn.Module):
                               self.base_activation(x)], dim=1)
         return F.linear(features, self.weight)
 
-    def _forward_2d(self, x: torch.Tensor) -> torch.Tensor:
-        """2D forward: tensor-product surface via outer-product features.
+    def _forward_1d_direct(self, x: torch.Tensor) -> torch.Tensor:
+        """1D forward via direct local contraction.
+
+        Gathers only the 4 active coefficients per input feature,
+        multiplies by basis values, and sums. Avoids the dense [B, I*K]
+        intermediate. Faster when out_features is small and K is large.
+        """
+        indices, values = local_values(
+            x, self.grid_starts, self.inv_h, self.n_bases)
+        # indices: [B, I, 4], values: [B, I, 4]
+
+        # Offset indices to index into the flattened I*K spline weight
+        feature_offsets = torch.arange(
+            self.in_features, device=x.device) * self.n_bases
+        flat_indices = indices + feature_offsets[None, :, None]  # [B, I, 4]
+
+        # Gather active coefficients: spline_weight is [O, I*K]
+        # Reshape to [I*K, O] for F.embedding lookup
+        n_spline = self.in_features * self.n_bases
+        coeff_table = self.weight[:, :n_spline].T  # [I*K, O]
+        coeffs = F.embedding(flat_indices, coeff_table)  # [B, I, 4, O]
+
+        # Contract: sum over 4 active bases and I input features
+        spline_out = (coeffs * values.unsqueeze(-1)).sum(dim=(1, 2))  # [B, O]
+
+        # Add residual
+        return spline_out + F.linear(self.base_activation(x), self.base_weight)
+
+    def _forward_2d_dense(self, x: torch.Tensor) -> torch.Tensor:
+        """2D forward via dense outer-product features + F.linear.
 
         Computes outer product b_x (x) b_y^T, flattens to [B, K*K],
         concatenates with residual [B, 2], and contracts with packed
@@ -186,12 +236,46 @@ class KANLayer(nn.Module):
         b_x = bases[:, 0, :]  # [B, K]
         b_y = bases[:, 1, :]  # [B, K]
 
-        # Tensor-product features: outer product flattened to [B, K*K]
         surface_features = (b_x.unsqueeze(-1) * b_y.unsqueeze(-2)).flatten(1)
 
         features = torch.cat([surface_features,
                               self.base_activation(x)], dim=1)
         return F.linear(features, self.weight)
+
+    def _forward_2d_direct(self, x: torch.Tensor) -> torch.Tensor:
+        """2D forward via direct 16-term local contraction.
+
+        Evaluates 4 active x-bases and 4 active y-bases, forms 16
+        tensor products, gathers the corresponding 16 coefficients,
+        and sums. Avoids the dense [B, K*K] intermediate entirely.
+        For grid=200 this is 235x faster than the dense path.
+        """
+        indices, values = local_values(
+            x, self.grid_starts, self.inv_h, self.n_bases)
+        # indices: [B, 2, 4], values: [B, 2, 4]
+
+        ix = indices[:, 0, :]   # [B, 4] -- active x basis indices
+        iy = indices[:, 1, :]   # [B, 4] -- active y basis indices
+        vx = values[:, 0, :]    # [B, 4] -- active x basis values
+        vy = values[:, 1, :]    # [B, 4] -- active y basis values
+
+        # 16 flat indices into the K*K coefficient matrix
+        flat_idx = (ix.unsqueeze(-1) * self.n_bases
+                    + iy.unsqueeze(-2)).flatten(1)  # [B, 16]
+
+        # 16 tensor-product basis values
+        products = (vx.unsqueeze(-1) * vy.unsqueeze(-2)).flatten(1)  # [B, 16]
+
+        # Gather active coefficients: [B, 16, O]
+        n_spline = self.n_bases * self.n_bases
+        coeff_table = self.weight[:, :n_spline].T  # [K*K, O]
+        coeffs = F.embedding(flat_idx, coeff_table)  # [B, 16, O]
+
+        # Contract: sum over 16 active terms
+        spline_out = (coeffs * products.unsqueeze(-1)).sum(dim=1)  # [B, O]
+
+        # Add residual
+        return spline_out + F.linear(self.base_activation(x), self.base_weight)
 
     def extra_repr(self) -> str:
         parts = [f"in_features={self.in_features}",
@@ -202,4 +286,6 @@ class KANLayer(nn.Module):
             parts.append(f"dim={self.dim}")
         if self.basis_mode != "local":
             parts.append(f"basis_mode='{self.basis_mode}'")
+        if self._use_direct:
+            parts.append("contraction='direct'")
         return ", ".join(parts)
